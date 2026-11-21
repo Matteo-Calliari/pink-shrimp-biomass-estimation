@@ -1,0 +1,1171 @@
+---
+title: "Biomass Estimation of Pink Shrimps: A Kriging-Based Approach Using Maximum Likelihood and Bayesian Methods"
+author: 
+  - "Matteo Calliari"
+  - "Stefano Platti"
+date: "29-11-2024"
+output: beamer_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries load and organize datasets, include=FALSE}
+
+x <- c("knitr","corrplot","factoextra","patchwork","metR","fpp3", "maps","geoR", "gstat", "sp", "sf", "MBA", "caret", "scatterplot3d", "ggplot2", "ade4", "gridExtra", "statmod", "tweedie", "mgcv", "np")
+#lapply(x, install.packages, character.only = TRUE)
+lapply(x, library, character.only = TRUE)
+load("shrimpsfull.RData") # Load dataset
+load("AllGrids.RData") # Load dataset
+
+# Divide the data set into two years
+s97 = shrimpsdata |> filter(ANNO=="1997")
+s02 = shrimpsdata |> filter(ANNO =="2002")
+
+#remove useless objects
+rm(list = c("shrimpsdata","x", ls(pattern = "^grid_199[5-6]|^grid_199[8-9]|^grid_200[0-1]|^grid_200[3-9]|^grid_2010")))
+
+#remove variables: spawners, recruits, year since they are not useful for analysis
+s02 = s02[, -c(3:5)]
+s97 = s97[, -c(3:5)]
+
+#spatial objects
+s02s = s02
+coordinates(s02s) = ~X + Y
+s97s = s97
+coordinates(s97s) = ~X + Y
+
+#Geo data object with the transformed variable 
+s97$log = log(s97$tot + 1)
+geo_data_97 <- as.geodata(s97, coords.col = 1:2, data.col = "log", covar.col = 3:25)
+
+s02$log = log(s02$tot + 1)
+geo_data_02 <- as.geodata(s02, coords.col = 1:2, data.col = "log", covar.col = 3:25)
+
+
+```
+
+## Overview of the Presentation
+
+1.  Introduction
+2.  Exploratory analysis of the data
+3.  Variogram analysis
+    -   Trend estimation
+4.  Maximum likelihood approach
+    -   Evaluation of the estimated model: CV, MSE, RMSE, CIS
+    -   Predictions point-wise and confidence intervals
+5.  Bayesian approach
+    -   Evaluation of the estimated model: CV, MSE, RMSE, CIS
+    -   Predictions point-wise and credibility intervals
+6.  Comparison between approaches
+
+## Introduction
+
+Through data analysis, we aim to model and predict pink shrimp biomass, analyze trends, and evaluate the impact of environmental and anthropogenic factors. This work relies on the data coming from the MEDITS survey for the year 1997 and 2002: in particular, these data describes the distribution of pink shrimps in the northern Tyrrhenian Sea and the Ligurian Sea.
+
+## Distribution of the biomass in the sea
+
+```{r plot coordinates, total biomass, 1997, 2002}
+plot1 = ggplot(data = s97) +
+  geom_point(aes(x = X, y = Y, color = tot)) +
+  scale_color_gradient(low = "yellow", high = "black") +  
+  theme_minimal() +
+  ggtitle("Year 1997, coordinates and biomass") +
+  labs(color = "Total biomass") +
+  theme(
+    panel.background = element_rect(fill = "lightblue", colour = NA),  # Sfondo del pannello
+    plot.background = element_rect(fill = "gray90", colour = NA)      # Sfondo complessivo
+  )
+
+plot2=ggplot(data=s02) +
+  geom_point(aes(x = X, y = Y, color = tot)) +
+  scale_color_gradient(low = "yellow", high = "black") + 
+  theme_minimal() +
+  ggtitle("Year 2002, coordinates and biomass")+
+  labs(color = "Total biomass")+
+  theme(
+    panel.background = element_rect(fill = "lightblue", colour = NA),  # Sfondo del pannello
+    plot.background = element_rect(fill = "gray90", colour = NA)      # Sfondo complessivo
+  )
+
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+## Histograms of the biomass distribution
+
+```{r Histogram of biomass}
+
+# Istogramma per s02$tot
+hist_tot_s02 <- ggplot(s02, aes(x = tot)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
+  ggtitle("Distribution of the biomass for 2002") +
+  xlab("Total biomass") +
+  ylab("Frequency") +
+  theme_minimal()
+
+# Istogramma per s97$tot
+hist_tot_s97 <- ggplot(s97, aes(x = tot)) +
+  geom_histogram(binwidth = 10, fill = "darkorange", color = "white") +
+  ggtitle("Distribution of the biomass for 1997") +
+  xlab("Total biomass") +
+  ylab("Frequency") +
+  theme_minimal()
+
+
+# Visualizzazione dei grafici (ad esempio con patchwork per combinarli)
+(hist_tot_s02 | hist_tot_s97)
+
+```
+
+## Logarithmic transformation
+
+The histograms of the biomass of pink shrimps show a zero-inflated distribution, which result in an asymmetric distribution. For this reason, it is necessary to introduce a logarithmic transformation: $\log(biomass + 1)$.
+
+Such that:
+
+-   It reduces the impact of the zero inflation.
+-   It symmetrizes the distribution of the non zero values.
+-   It can bring the process closer to a condition of stationarity.
+-   Distribution of the transformed data can be approximated with a gaussian distribution.
+
+## Histograms of the log biomass distribution
+
+```{r}
+# Istogramma per s02$log
+hist_log_s02 <- ggplot(s02, aes(x = log)) +
+  geom_histogram(binwidth = 0.5, fill = "forestgreen", color = "white") +
+  ggtitle("Distribution of the log(biomass+1) for 2002") +
+  xlab("Log biomass") +
+  ylab("Frequency") +
+  theme_minimal()
+
+# Istogramma per s97$log
+hist_log_s97 <- ggplot(s97, aes(x = log)) +
+  geom_histogram(binwidth = 0.5, fill = "purple", color = "white") +
+  ggtitle("Distribution of the log(biomass+1) for 1997") +
+  xlab("Log biomass") +
+  ylab("Frequency") +
+  theme_minimal()
+
+(hist_log_s02 | hist_log_s97)
+```
+
+## Correlation matrix for the year 1997
+
+```{r correlation 97}
+
+# Calcolare la matrice di correlazione tra variabili
+cor_matrix_97 <- cor(s97[,-26], method = "spearman")
+
+
+corrplot(cor_matrix_97, 
+         method = "square",              # Usa il metodo "square"
+         type = "upper",                 # Mostra solo la parte superiore della matrice (per evitare duplicati)
+         tl.col = "black",               # Colore delle etichette delle variabili
+         tl.srt = 45,                    # Angolo di rotazione delle etichette (45° per una migliore leggibilità)
+         addCoef.col = "white",          # Aggiungi i valori della correlazione in bianco
+         number.cex = 0.8,               # Dimensione dei numeri
+         col = colorRampPalette(c("blue", "white", "red"))(200),  # Colori blu-bianco-rosso per una migliore distinzione
+         diag = FALSE,                   # Non visualizzare i valori sulla diagonale
+         title = "Correlation matrix",  # Titolo
+         mar = c(0, 0, 1, 0)             # Margini per il titolo
+)
+
+
+
+```
+
+## Correlation matrix for the year 2002
+
+```{r correlation 02}
+
+# Calcolare la matrice di correlazione tra variabili
+
+cor_matrix_02 <- cor(s02[,-26], method = "spearman")
+
+
+
+corrplot(cor_matrix_02, 
+         method = "square",              # Usa il metodo "square"
+         type = "upper",                 # Mostra solo la parte superiore della matrice (per evitare duplicati)
+         tl.col = "black",               # Colore delle etichette delle variabili
+         tl.srt = 45,                    # Angolo di rotazione delle etichette (45° per una migliore leggibilità)
+         addCoef.col = "white",          # Aggiungi i valori della correlazione in bianco
+         number.cex = 0.8,               # Dimensione dei numeri
+         col = colorRampPalette(c("blue", "white", "red"))(200),  # Colori blu-bianco-rosso per una migliore distinzione
+         diag = FALSE,                   # Non visualizzare i valori sulla diagonale
+         title = "Correlation matrix",  # Titolo
+         mar = c(0, 0, 1, 0)             # Margini per il titolo
+)
+
+```
+
+## Plot of the log biomass with bathymetry, slope, distance from the coast
+
+```{r plot dist, slope, tot, bat}
+
+# First plot
+plot1 = ggplot(data = s97) +
+  geom_point(aes(x = dist, y = slope, color = log)) +
+  scale_color_gradient(low = "red", high = "green") +  # Change color scale from red to green
+  theme_minimal() +
+  ggtitle("Year 1997, distance and slope") +
+  labs(color = "Log biomass") +
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set background to light grey
+    panel.background = element_rect(fill = "white") # Set rectangular wallpaper (panel background)
+  )
+
+# Second plot
+plot2 = ggplot(data = s97) +
+  geom_point(aes(x = bat, y = slope, color = log)) +
+  scale_color_gradient(low = "red", high = "green") +  # Change color scale from red to green
+  theme_minimal() +
+  ggtitle("Year 1997, bathymetry and slope") +
+  labs(color = "Log biomass") +
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set background to light grey
+    panel.background = element_rect(fill = "white") # Set rectangular wallpaper (panel background)
+  )
+
+# Third plot
+plot3 = ggplot(data = s02) +
+  geom_point(aes(x = dist, y = slope, color = log)) +
+  scale_color_gradient(low = "red", high = "green") +  # Change color scale from red to green
+  theme_minimal() +
+  ggtitle("Year 2002, distance and slope") +
+  labs(color = "Log biomass") +
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set background to light grey
+    panel.background = element_rect(fill = "white") # Set rectangular wallpaper (panel background)
+  )
+
+# Fourth plot
+plot4 = ggplot(data = s02) +
+  geom_point(aes(x = bat, y = slope, color = log)) +
+  scale_color_gradient(low = "red", high = "green") +  # Change color scale from red to green
+  theme_minimal() +
+  ggtitle("Year 2002, bathymetry and slope") +
+  labs(color = "Log biomass") +
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set background to light grey
+    panel.background = element_rect(fill = "white") # Set rectangular wallpaper (panel background)
+  )
+
+# Arrange all plots into a grid
+grid.arrange(plot1, plot2, plot3, plot4, ncol = 2)
+
+```
+
+## Plot of the log biomass with temperature, salinity
+
+```{r plot salinity, temperature, biomass, minimum, fourth trimester 1997 and 2002}
+plot1 = ggplot(data = s97) +
+  geom_point(aes(x = salinity.minq4p, y = temp.minq4p, color = log)) +
+  scale_color_gradient(low = "green", high = "red") +  # Consistent color scale from yellow to black
+  theme_minimal() +  # Clean minimal theme
+  ggtitle("Year 1997: Salinity vs Temperature") +  # Add a title
+  labs(color = "Log biomass") +  # Label for the color scale
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set plot background color
+    panel.background = element_rect(fill = "white")      # Set panel background to white
+  )
+
+# Second plot (Year 2002)
+plot2 = ggplot(data = s02) +
+  geom_point(aes(x = salinity.minq4p, y = temp.minq4p, color = log)) +
+  scale_color_gradient(low = "green", high = "red") +  # Consistent color scale from yellow to black
+  theme_minimal() +  # Clean minimal theme
+  ggtitle("Year 2002: Salinity vs Temperature") +  # Add a title
+  labs(color = "Log biomass") +  # Label for the color scale
+  theme(
+    plot.background = element_rect(fill = "lightgrey"),  # Set plot background color
+    panel.background = element_rect(fill = "white")      # Set panel background to white
+  )
+
+
+# Arrange all plots into a grid
+grid.arrange(plot1, plot2, ncol = 2)
+```
+
+## Covariates considerations
+
+Results obtained from previous graphical analysis:
+
+-   Abnormality of the correlation between salinity and temperature in the year 1997.
+-   The different temperature variables have pretty much the same influence over the biomass.
+-   The same thing applies to the salinity variables.
+-   The distribution of biomass may be influenced by territorial factors such as slope, bathymetry, and distance from the coast.
+
+## Trends estimations
+
+Taking into account the previous exploratory analysis, four trends are considered: these trends are estimated using a generalized additive model (GAM), considering a non parametric approach.
+
+-   $\log(biomass + 1)$ \~ s(slope) + s(temp.minq4p)
+-   $\log(biomass + 1)$ \~ s(slope)+ s(temp.minq4p) + s(salinity.minq4p)
+-   $\log(biomass + 1)$ \~ s(bat) + s(dist) + s(slope)
+-   $\log(biomass + 1)$ \~ s(bat)+ s(temp.minq4p) + s(salinity.minq4p)
+
+## Definition of the spatial process
+
+Both the maximum likelihood approach and the bayesian method relies on the definition of the spatial process, as a mixed effect linear model:
+
+$$Z(s) = \mathbf{X}(s)\boldsymbol{\beta} + W(s) + \varepsilon(s)$$
+
+With:
+
+-   $\mathbf{X}(s)\boldsymbol{\beta}$ : Trend component
+
+-   $\varepsilon(s) \sim N_n(0, \tau^2)$ : Measurement error
+
+-   $W(s) \sim N_n(0, \sigma^2 H_{11}(\phi))$ : Spatial random effect
+
+## Maximum likelihood approach
+
+The ML method works with the following model of the spatial process Z(s), obtained after integrating out the random effect: in addition, this model is assumed to be the same for both the observed and unobserved points.
+
+$$Z(s) \sim N_n(\mathbf{X}(s)\boldsymbol{\beta}, \boldsymbol{\Sigma}_{11})$$
+
+With:
+
+-   $\boldsymbol{\Sigma}_{11} = \sigma^2 H_{11}(\phi) + \tau^2 \mathbf{I}$
+-   $\phi$ : Covariance decay parameter
+-   $\sigma^2$ : Partial sill
+-   $\tau^2$ : Nugget of the variogram
+-   $\beta$ : Parameters of the trend component
+
+## Variograms
+
+```{r, include=FALSE}
+geo_data_97 <- as.geodata(s97, coords.col = 1:2, data.col = "log", covar.col = 3:25) #log biomass
+bio_geo_data_97 = as.geodata(s97, coords.col = 1:2, data.col = "tot", covar.col = 3:25) #biomass
+plot1=variog(bio_geo_data_97)
+plot2=variog(geo_data_97)
+plot3=variog(geo_data_97, max.dist = 300)
+plot4=variog(geo_data_97, max.dist = 50)
+```
+
+```{r Variogram, echo=FALSE}
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))  # Adjust margins for better spacing
+
+# Plot 1: Variogram for bio_geo_data_97
+plot(plot1, 
+     main = "Variogram for the biomass", 
+     xlab = "Distance", ylab = "Semivariance", 
+     col = "blue", pch = 16, cex = 0.8, 
+     type = "b")
+
+# Plot 2: Variogram for geo_data_97
+plot(plot2, 
+     main = "Variogram for log biomass", 
+     xlab = "Distance", ylab = "Semivariance", 
+     col = "green", pch = 16, cex = 0.8, 
+     type = "b")
+
+# Plot 3: Variogram for geo_data_97 with max.dist = 300
+plot(plot3, 
+     main = "Variogram for log biomass (max.dist = 300)", 
+     xlab = "Distance", ylab = "Semivariance", 
+     col = "red", pch = 16, cex = 0.8, 
+     type = "b")
+
+# Plot 4: Variogram for geo_data_97 with max.dist = 50
+plot(plot4, 
+     main = "Variogram for log biomass (max.dist = 50)", 
+     xlab = "Distance", ylab = "Semivariance", 
+     col = "purple", pch = 16, cex = 0.8, 
+     type = "b")
+```
+
+```{r, include=FALSE}
+#trend estimation
+gam_model <- gam(log(tot + 1) ~ s(slope) + s(temp.minq4p), data = s97)
+
+#fitted values of the trend
+trend = gam_model$fitted.values
+
+#residuals
+s97$residuals <- residuals(gam_model)
+
+#geodata object
+geo_data <- as.geodata(s97, coords.col = 1:2, data.col = "residuals", covar.col = 3:25)
+
+#empirical variogram
+emp_variogram <- variog(geo_data, max.dist = 50)
+
+#initial parameter estimate using graphical analysis
+#d = eyefit(emp_variogram)
+
+#model estimation
+vv.mat = likfit(geo_data, ini.cov.pars = c(3.93, 42.86), nugget = 1.14, cov.model = "matern", kappa = 0.24)
+vv.exp = likfit(geo_data, ini.cov.pars = c(3.55, 22.08), nugget = 1.39, cov.model = "exponential")
+vv.sph = likfit(geo_data, ini.cov.pars = c(2.28, 20.78), nugget = 1.65, cov.model = "spherical")
+
+#trend estimation
+gam_model2 <- gam(log(tot +1) ~ s(slope)+ s(temp.minq4p) + s(salinity.minq4p),  data = s97)
+
+#fitted values on the trend
+trend2=gam_model2$fitted.values
+
+#residuals
+s97$residuals2 <- residuals(gam_model2)
+
+#geodata object
+geo_data2 <- as.geodata(s97, coords.col = 1:2, data.col = "residuals2", covar.col = 3:25)
+
+#empirical variogram
+emp_variogram2 <- variog(geo_data2,max.dist = 50)
+
+#model estimation
+vv.mat2=likfit(geo_data2,ini.cov.pars=c(3.63,89.61),nugget=1.64, cov.model="matern",kappa=0.14)
+vv.exp2=likfit(geo_data2,ini.cov.pars=c(3.63,27.27),nugget=1.52, cov.model="exponential")
+vv.sph2=likfit(geo_data2,ini.cov.pars=c(2.46,16.02),nugget=1.52, cov.model="spherical")
+
+#trend estimation
+gam_model3 <- gam(log(tot +1) ~ s(bat) + s(dist) + s(slope),  data = s97)
+
+#fitted values on the trend
+trend3=gam_model3$fitted.values
+
+#residuals
+s97$residuals3 <- residuals(gam_model3)
+
+#geodata object
+geo_data3 <- as.geodata(s97, coords.col = 1:2, data.col = "residuals3", covar.col = 3:25)
+
+#empirical variogram
+emp_variogram3 <- variog(geo_data3,max.dist = 50)
+
+
+#model estimation
+vv.mat3=likfit(geo_data3,ini.cov.pars=c(1.79,27.27),nugget=0.54, cov.model="matern",kappa=0.27)
+vv.exp3=likfit(geo_data3,ini.cov.pars=c(1.76,16.02),nugget=0.54, cov.model="exponential")
+vv.sph3=likfit(geo_data3,ini.cov.pars=c(0.95,19.48),nugget=0.6, cov.model="spherical")
+
+#trend estimation
+gam_model4 <- gam(log(tot +1) ~ s(bat)+ s(temp.minq4p) + s(salinity.minq4p),  data = s97)
+
+#fitted values on the trend
+trend4=gam_model4$fitted.values
+
+#residuals
+s97$residuals4 <- residuals(gam_model4)
+
+#geodata object
+geo_data4 <- as.geodata(s97, coords.col = 1:2, data.col = "residuals4", covar.col = 3:25)
+
+#empirical variogram
+emp_variogram4 <- variog(geo_data4,max.dist = 50)
+
+#initial parameter estimate using graphical analysis
+#d=eyefit(emp_variogram)
+
+#model estimation
+vv.mat4=likfit(geo_data4,ini.cov.pars=c(1.87,18.18),nugget=0.44, cov.model="matern",kappa=0.35)
+vv.exp4=likfit(geo_data4,ini.cov.pars=c(1.87,18.18),nugget=0.44, cov.model="exponential")
+vv.sph4=likfit(geo_data4,ini.cov.pars=c(1.64,18.18),nugget=0.63, cov.model="spherical")
+```
+
+## Empirical variograms with trends
+
+```{r trends}
+
+par(mfrow = c(2, 2))
+
+plot(
+  emp_variogram,
+  main = "Empirical Variogram with Fitted Models",
+  sub = "Covariates : slope, temp.minq4p",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph, col = "red", lwd = 2)
+lines(vv.exp, col = "blue", lwd = 2)
+lines(vv.mat, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+
+
+
+plot(
+  emp_variogram2,
+  main = "Empirical Variogram with Fitted Models",
+  sub = "Covariates : slope, temp.minq4p, salinity.minq4p",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph2, col = "red", lwd = 2)
+lines(vv.exp2, col = "blue", lwd = 2)
+lines(vv.mat2, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+
+plot(
+  emp_variogram3,
+  main = "Empirical Variogram with Fitted Models",
+  sub = "Covariates : bat, dist, slope",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph3, col = "red", lwd = 2)
+lines(vv.exp3, col = "blue", lwd = 2)
+lines(vv.mat3, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+
+plot(
+  emp_variogram4,
+  main = "Empirical Variogram with Fitted Models",
+  sub = "Covariates : bat, temp.minq4p, salinity.minq4p",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph4, col = "red", lwd = 2)
+lines(vv.exp4, col = "blue", lwd = 2)
+lines(vv.mat4, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+## Estimated variograms for the year 1997 without trend
+
+```{r estimates 1997, include=FALSE}
+vv.mat_97 = likfit(geo_data_97, ini.cov.pars = c(4.12, 11.69), nugget = 1.98, kappa = 0.27, cov.model = "matern")
+vv.exp_97 = likfit(geo_data_97, ini.cov.pars = c(3.79, 11.69), nugget = 1.98, cov.model = "exponential")
+vv.sph_97 = likfit(geo_data_97, ini.cov.pars = c(2.47, 11.69), nugget = 2.8, cov.model = "spherical")
+
+# Leave one out cross-validation
+xval.sph_97 = xvalid(geo_data_97, model = vv.sph_97)
+xval.exp_97 = xvalid(geo_data_97, model = vv.exp_97)
+xval.mat_97 = xvalid(geo_data_97, model = vv.mat_97)
+```
+
+```{r, include=FALSE}
+emp_variogram_97 = variog(geo_data_97, max.dist = 50)
+```
+
+```{r Plot empirical and estimated variogram}
+par(mfrow = c(1, 1))
+
+plot(
+  emp_variogram_97,
+  main = "Empirical Variogram with Fitted Models",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph_97, col = "red", lwd = 2)
+lines(vv.exp_97, col = "blue", lwd = 2)
+lines(vv.mat_97, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+## Models evaluation for the year 1997
+
+```{r tables 1997}
+
+# Create a data frame
+  Indexes <- data.frame(
+  Models = c("Spherical", "Exponential", "Matern"),
+  CV_index = round(c(mean(xval.sph_97$std.error^2), mean(xval.exp_97$std.error^2), mean(xval.mat_97$std.error^2)), 2),
+  MSE = round(c(mean(xval.sph_97$error^2), mean(xval.exp_97$error^2), mean(xval.mat_97$error^2)), 2)
+)
+
+Indexes$RMSE <- round(sqrt(Indexes$MSE), 3)
+
+# Render table
+kable(Indexes, caption = "Indexes : CV, MSE, RMSE for the models : Spherical, Exponential, Matern")
+```
+
+## Estimated variograms for the year 2002 without trend
+
+```{r  estimates 2002, include=FALSE}
+
+#model estimation
+vv.mat_02 = likfit(geo_data_02, ini.cov.pars = c(6.51, 53.21), nugget = 1.98, kappa = 0.14, cov.model = "matern")
+vv.exp_02 = likfit(geo_data_02, ini.cov.pars = c(6.65, 15.57), nugget = 2.02, cov.model = "exponential")
+vv.sph_02 = likfit(geo_data_02, ini.cov.pars = c(5.84, 22.06), nugget = 1.8, cov.model = "spherical")
+
+
+# Leave one out cross-validation
+xval.sph_02 = xvalid(geo_data_02, model = vv.sph_02)
+xval.exp_02 = xvalid(geo_data_02, model = vv.exp_02)
+xval.mat_02 = xvalid(geo_data_02, model = vv.mat_02)
+```
+
+```{r, include=FALSE}
+emp_variogram_02 = variog(geo_data_02, max.dist = 50)
+```
+
+```{r plot of the estimated models 2002, echo=FALSE}
+par(mfrow = c(1, 1))
+plot(
+  emp_variogram_02,
+  main = "Empirical Variogram with Fitted Models",
+  xlab = "Distance",
+  ylab = "Semivariance",
+  pch = 16,
+  col = "black"
+)
+
+# Add lines for each model with clear colors and line widths
+lines(vv.sph_02, col = "red", lwd = 2)
+lines(vv.exp_02, col = "blue", lwd = 2)
+lines(vv.mat_02, col = "orange", lwd = 2)
+
+# Add a legend with descriptive labels and line width
+legend(
+  "bottomright",
+  legend = c("Spherical Model", "Exponential Model", "Matern Model"),
+  col = c("red", "blue", "orange"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+## Models evaluation for the year 2002
+
+```{r tables 2002, echo=FALSE}
+
+Indexes <- data.frame(
+  Models = c("Spherical", "Exponential", "Matern"),
+  CV_index = round(c(mean(xval.sph_02$std.error^2), mean(xval.exp_02$std.error^2), mean(xval.mat_02$std.error^2)), 3),
+  MSE = round(c(mean(xval.sph_02$error^2), mean(xval.exp_02$error^2), mean(xval.mat_02$error^2)), 3),
+  RMSE = round(c(sqrt(mean(xval.sph_02$error^2)), sqrt(mean(xval.exp_02$error^2)), sqrt(mean(xval.mat_02$error^2))), 3)
+)
+
+
+# Render table
+kable(Indexes, caption = "Indexes : CV, MSE, RMSE for the models : Spherical, Exponential, Matern")
+
+```
+
+```{r interval score, include=FALSE }
+interval_score <- function(y, L, U, a) {
+  # Calculate the interval score
+  score <- (U - L) + (2/a) * (L - y) * (y < L) + (2/a) * (y - U) * (y > U)
+  return(score)
+}
+
+
+#leave one out cross validation 
+k=length(xval.exp_97$predicted)
+out_97 <- data.frame(low=rep(NA,k),up=rep(NA,k),score=rep(NA,k)) #dataframe for storing lower and upper limits and the interval score values
+
+for (i in 1:k) {
+  
+  low=xval.exp_97$predict[i]-1.96*sqrt(xval.exp_97$krige.var[i])#lower limit
+  up=xval.exp_97$predict[i]+1.96*sqrt(xval.exp_97$krige.var[i])#upper limit
+  
+  score=interval_score(s97[i,"log"],low,up,0.05) #interval score computation
+  
+  out_97[i,1]=low
+  out_97[i,2]=up
+  out_97[i,3]=score
+  
+}
+
+#kriging model
+kk.c_97=krige.control(obj.model=vv.exp_97)
+#Predictions with kriging on the new grid 
+krig1_97 = krige.conv(geo_data_97, locations=grid_1997[,1:2], krige=kk.c_97)
+
+#CI predictions on the new grid
+low_97=krig1_97$predict-1.96*sqrt(krig1_97$krige.var)
+up_97=krig1_97$predict+1.96*sqrt(krig1_97$krige.var)
+#Average interval scores
+
+#kriging model
+kk.c_02=krige.control(obj.model=vv.exp_02)
+#Predictions with kriging on the new grid 
+krig1_02 = krige.conv(geo_data_02, locations=grid_2002[,1:2], krige=kk.c_02)
+#CI predictions on the new grid
+low_02=krig1_02$predict-1.96*sqrt(krig1_02$krige.var)
+up_02=krig1_02$predict+1.96*sqrt(krig1_02$krige.var)
+
+```
+
+## Point wise predictions for the year 1997
+
+```{r plot point predictions 1997}
+dummy_97=cbind(grid_1997, krig1_97$predict , sqrt(krig1_97$krige.var))
+names(dummy_97)[26]="predict"
+names(dummy_97)[27]="sd"
+
+ggplot(dummy_97, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +        # Plot mean prediction
+  scale_fill_viridis_c(option = "viridis") +   # Color scale for prediction
+  geom_contour(aes(z = sd), color = "black",   # Optional: contour for sd
+               alpha = 0.5) +
+  geom_text_contour(aes(z = sd),               # Add labels to contour lines
+                    color = "black",
+                    size = 3,                  # Adjust text size as needed
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Point wise predictions",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## Confidence intervals predictions for the year 1997
+
+```{r plot intervallare 1997}
+dummy_97=cbind(grid_1997, krig1_97$predict , sqrt(krig1_97$krige.var), low_97, up_97)
+names(dummy_97)[26]="predict"
+names(dummy_97)[27]="sd"
+names(dummy_97)[28]="low"
+names(dummy_97)[29]="up"
+
+
+# Visualizzazione con ggplot
+ggplot(dummy_97, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +                 # Mediana delle previsioni
+  scale_fill_viridis_c(option = "viridis") +        # Colori per la mediana
+  geom_contour(aes(z = up - low), color = "black",  # Contorni dell'intervallo di confidenza
+               alpha = 0.6) +
+  geom_text_contour(aes(z = up - low),              # Aggiunta delle etichette dell'intervallo
+                    color = "black",
+                    size = 3,
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Kriging predictions with confidence intervals at 95%",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## Point wise predictions for the year 2002
+
+```{r plot point predictions 2002}
+dummy_02=cbind(grid_2002, krig1_02$predict , sqrt(krig1_02$krige.var))
+names(dummy_02)[26]="predict"
+names(dummy_02)[27]="sd"
+
+ggplot(dummy_02, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +        # Plot mean prediction
+  scale_fill_viridis_c(option = "viridis") +   # Color scale for prediction
+  geom_contour(aes(z = sd), color = "black",   # Optional: contour for sd
+               alpha = 0.5) +
+  geom_text_contour(aes(z = sd),               # Add labels to contour lines
+                    color = "black",
+                    size = 3,                  # Adjust text size as needed
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Point wise predictions",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## Confidence intervals predictions for the year 2002
+
+```{r plot intervallare 2002}
+dummy_02=cbind(grid_2002, krig1_02$predict , sqrt(krig1_02$krige.var), low_02, up_02)
+names(dummy_02)[26]="predict"
+names(dummy_02)[27]="sd"
+names(dummy_02)[28]="low"
+names(dummy_02)[29]="up"
+
+
+# Visualizzazione con ggplot
+ggplot(dummy_02, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +                 # Mediana delle previsioni
+  scale_fill_viridis_c(option = "viridis") +        # Colori per la mediana
+  geom_contour(aes(z = up - low), color = "black",  # Contorni dell'intervallo di confidenza
+               alpha = 0.6) +
+  geom_text_contour(aes(z = up - low),              # Aggiunta delle etichette dell'intervallo
+                    color = "black",
+                    size = 3,
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Kriging predictions with confidence intervals at 95%",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## Bayesian Approach
+
+-   As the ML approach, also the Bayesian framework relies on the definition of the spatial process as a mixed effect linear model.
+-   In this case the parameters of the model are not considered fixed, but as random variables, with some prior knowledge being described in terms of probability distributions.
+-   The predictive distribution, used for interpolation on unobserved points, is obtained averaging the conditional distribution over the entire parameters space using the posterior distributions as weighting distributions.
+-   It is assumed that the distribution of the spatial process is the same, both for observed points and new locations.
+
+## Prior knowledge
+
+In this case, the prior knowledge about the parameters of the spatial process can be obtained from two main sources:
+
+-   Maximum likelihood analysis
+
+-   Study of the empirical variogram
+
+## Study of the variogram
+
+```{r  cv function}
+cv=function(grid_97){
+  grid_97=as.data.frame(grid_97)
+  k=nrow(grid_97)
+  
+  empty_df <- data.frame(
+    CIS = rep(NA,k),   
+    RMSE = rep(NA,k),     
+    CV = rep(NA,k)     
+    
+  )
+  
+  for (i in 1:k) {
+    data_geo <- as.geodata(grid_97[-i,], coords.col = 1:2, data.col = "log", covar.col = 3:25) #train data
+    kb_output =krige.bayes(data_geo, model=model, prior=prior, output = out, locations = grid_97[i,1:2])#computation of the bayesian kriging predictions
+    empty_df[i,1]=interval_score(grid_97[i,"log"],kb_output$predictive$quantiles.simulations$q2.5, kb_output$predictive$quantiles.simulations$q97.5,0.05) #CIS
+    empty_df[i,2]= (kb_output$predictive$mean - grid_97[i,"log"])^2 #RMSE
+    empty_df[i,3]= ((kb_output$predictive$mean - grid_97[i,"log"])/sqrt(kb_output$predictive$variance))^2 #CV
+  }
+  
+  indici=c(mean(empty_df[,1]), sqrt(mean(empty_df[,2])),mean(empty_df[,3])) 
+  
+  # Extract the values and format them with labels
+  output <- sprintf("CIS: %.3f, RMSE: %.3f, CV: %.3f", indici[1], indici[2], indici[3])
+  
+  # Print the formatted output
+  print(output)
+  
+  return(indici)
+  
+}
+
+```
+
+```{r  Variogram 1997, include=FALSE}
+# Computation of the variogram
+emp_variogram_97 <- variog(geo_data_97, max.dist = 50)
+
+#MLE of variance parameters
+vv.exp_97 = likfit(geo_data_97, ini.cov.pars = c(3.79, 11.69), nugget = 1.98, cov.model = "exponential")
+
+#parameters
+vv.exp_97$parameters.summary
+
+#cross validation
+xval.exp_97 = xvalid(geo_data_97, model = vv.exp_97)
+
+#original scale predictions
+prev_orig_exp_97 = exp(xval.exp_97$predicted) - 1
+```
+
+```{r}
+#plot estimated variogram
+plot(emp_variogram_97)
+lines(vv.exp_97, col = "blue", lwd = 2)
+
+```
+
+## Maximum likelihood estimates
+
+```{r}
+
+
+Indexes <- data.frame(
+  Parameters = c("$\\beta$", "$\\tau^2$", "$\\sigma^2$", "$\\phi$"),
+  Values = c(1.7611, 0, 5.7333, 9.4130) # Adjust values as needed
+)
+
+knitr::kable(Indexes, caption = "Maximum likelihood estimates (1997)")
+
+
+```
+
+## Parameters
+
+```{r  model definition, include=FALSE}
+model=model.control(cov.model = "exponential")
+
+#definition of prior distribution
+prior=prior.control(beta.prior="normal",beta=1.7611, beta.var.std = 8,
+                    sigmasq.prior = "reciprocal",
+                    phi.prior="uniform",phi.discrete=seq(8,30,by=1),
+                    tausq.rel.prior = "uniform",
+                    tausq.rel.discrete = seq(0,2.5,by=0.2))
+
+#definition of the output of the kriging
+out=output.control(1000,1000,quantile=c(0.025,0.25,0.5,0.75,0.975))
+
+#kriging
+kb=krige.bayes(geo_data_97,model=model, prior=prior, output = out)
+
+#plot of prior and estimated posterior for phi and tausq
+
+```
+
+The following prior distributions for the parameters of the model are considered:
+
+-   $\beta$ \~ N(1.7611, 8)
+-   $\sigma^2$: Reciprocal distribution
+-   $\phi$: Discrete uniform, in the range [8,30,by=1]
+-   $\frac{\tau^2}{\sigma^2}$: Discrete uniform, in the range [0.2,5,by=1]
+
+## Prior and posterior distributions for parameters $\phi$ , $\frac{\tau^2}{\sigma^2}$
+
+```{r}
+par(mfrow = c(1, 2))
+
+# Disegna il primo grafico
+plot(kb)
+```
+
+## Final prior and posterior distribution for $\phi$
+
+```{r prior 1997, include=FALSE}
+#definitive prior model
+prior=prior.control(beta.prior="normal",beta=1.7611, beta.var.std = 6,
+                    sigmasq.prior = "reciprocal",
+                    phi.prior="uniform",phi.discrete=seq(9,12,by=0.5),
+                    tausq.rel.prior = "fixed",
+                    tausq.rel = 0)
+
+#definition of how many samples to generate and quantiles
+out=output.control(1000,1000,quantile=c(0.025,0.25,0.5,0.75,0.975))
+
+#kriging
+kb=krige.bayes(geo_data_97,model=model, prior=prior, output = out)
+```
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+#par(mfrow = c(1, 2))
+
+# Disegna il primo grafico
+plot(kb)
+```
+
+```{r model 1997, include=FALSE}
+#predictions using the posterior distribution on the grid 1997
+kb_prev_97=krige.bayes(geo_data_97,model=model, prior=prior, output = out, locations = grid_1997[,1:2])
+
+#point estimates
+kb_prev_97$predictive$mean
+
+#first and second quantiles for CIs estimations
+kb_prev_97$predictive$quantiles.simulations$q2.5 #lower limit
+kb_prev_97$predictive$quantiles.simulations$q97.5 #upper limit
+
+set.seed(1)
+cv(s97)
+```
+
+## Point wise predictions for the year 1997
+
+```{r}
+dummy_97=cbind(grid_1997, kb_prev_97$predictive$mean , sqrt(kb_prev_97$predictive$variance))
+names(dummy_97)[26]="predict"
+names(dummy_97)[27]="sd"
+
+ggplot(dummy_97, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +        # Plot mean prediction
+  scale_fill_viridis_c(option = "viridis") +   # Color scale for prediction
+  geom_contour(aes(z = sd), color = "black",   # Optional: contour for sd
+               alpha = 0.5) +
+  geom_text_contour(aes(z = sd),               # Add labels to contour lines
+                    color = "black",
+                    size = 3,                  # Adjust text size as needed
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Point wise predictions",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## Credibility intervals predictions for the year 1997
+
+```{r}
+dummy_97=cbind(grid_1997, kb_prev_97$predictive$mean , sqrt(kb_prev_97$predictive$variance), kb_prev_97$predictive$quantiles.simulations$q50, kb_prev_97$predictive$quantiles.simulations$q2.5, kb_prev_97$predictive$quantiles.simulations$q97.5)
+names(dummy_97)[26]="predict"
+names(dummy_97)[27]="sd"
+names(dummy_97)[28]="median"
+names(dummy_97)[29]="primoq"
+names(dummy_97)[30]="secondoq"
+
+# Visualizzazione con ggplot
+ggplot(dummy_97, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +                 # Mediana delle previsioni
+  scale_fill_viridis_c(option = "viridis") +        # Colori per la mediana
+  geom_contour(aes(z = secondoq - primoq), color = "black",  # Contorni dell'intervallo di confidenza
+               alpha = 0.6) +
+  geom_text_contour(aes(z = secondoq - primoq),              # Aggiunta delle etichette dell'intervallo
+                    color = "black",
+                    size = 3,
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Kriging predictions with credibility intervals at 95%",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+```{r, include=FALSE}
+#definitive prior model
+prior=prior.control(beta.prior="normal",beta=2.3594, beta.var.std = 9,
+                    sigmasq.prior = "reciprocal",
+                    phi.prior="uniform",phi.discrete=seq(7,10,by=0.5),
+                    tausq.rel.prior = "fixed",
+                    tausq.rel = 0)
+
+#definition of how many samples to generate and quantiles
+out=output.control(1000,1000,quantile=c(0.025,0.25,0.5,0.75,0.975))
+
+
+#kriging
+kb = krige.bayes(geo_data_02,model=model, prior=prior, output = out)
+
+
+#predictions using the posterior distribution on the grid 2002
+kb_prev_02=krige.bayes(geo_data_02,model=model, prior=prior, output = out, locations = grid_2002[,1:2])
+
+```
+
+## Point wise predictions for the year 2002
+
+```{r}
+
+#plot of the predictions on a new grid with unobserved points
+dummy_02=cbind(grid_2002, kb_prev_02$predictive$mean , sqrt(kb_prev_02$predictive$variance))
+names(dummy_02)[26]="predict"
+names(dummy_02)[27]="sd"
+
+ggplot(dummy_02, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +        # Plot mean prediction
+  scale_fill_viridis_c(option = "viridis") +   # Color scale for prediction
+  geom_contour(aes(z = sd), color = "black",   # Optional: contour for sd
+               alpha = 0.5) +
+  geom_text_contour(aes(z = sd),               # Add labels to contour lines
+                    color = "black",
+                    size = 3,                  # Adjust text size as needed
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Point wise predictions",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+
+
+
+```
+
+## Credibility intervals predictions for the year 2002
+
+```{r}
+dummy_02=cbind(grid_2002, kb_prev_02$predictive$mean , sqrt(kb_prev_02$predictive$variance), kb_prev_02$predictive$quantiles.simulations$q50, kb_prev_02$predictive$quantiles.simulations$q2.5, kb_prev_02$predictive$quantiles.simulations$q97.5)
+names(dummy_02)[26]="predict"
+names(dummy_02)[27]="sd"
+names(dummy_02)[28]="median"
+names(dummy_02)[29]="primoq"
+names(dummy_02)[30]="secondoq"
+
+# Visualizzazione con ggplot
+ggplot(dummy_02, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = predict)) +                 # Mediana delle previsioni
+  scale_fill_viridis_c(option = "viridis") +        # Colori per la mediana
+  geom_contour(aes(z = secondoq - primoq), color = "black",  # Contorni dell'intervallo di confidenza
+               alpha = 0.6) +
+  geom_text_contour(aes(z = secondoq - primoq),              # Aggiunta delle etichette dell'intervallo
+                    color = "black",
+                    size = 3,
+                    label.placer = label_placer_flattest()) +
+  labs(title = "Kriging predictions with credibility intervals at 95%",
+       fill = "Log biomass") +
+  theme_minimal() +
+  coord_fixed()
+```
+
+## ML vs Bayesian
+
+```{r}
+# Create a sample data frame
+Indexes <- data.frame(
+  Methods = c("Bayesian", "ML"),
+  CV_index = c(0.996, 0.982),
+  MSE = c(3.775, 3.779),
+  RMSE = c(1.943, 1.944),
+  IS = c(8.416,8.270)
+)
+#likelihood CIS: 8.27, RMSE: 1.944, CV: 0.982
+#bayesian CIS: 8.416, RMSE: 1.943, CV: 0.996
+# Generate a table with kable
+knitr::kable(Indexes, caption = "Methods Performance Metrics for 1997")
+
+# Create a sample data frame
+Indexes <- data.frame(
+  Methods = c("Bayesian", "ML"),
+  CV_index = c(1.020, 0.989),
+  MSE = c(5.354, 5.368),
+  RMSE = c(2.314, 2.317),
+  IS = c(9.299,9.030)
+)
+#bayesian : CIS: 9.299, RMSE: 2.314, CV: 1.020
+#likelihood : CIS: 9.03, RMSE: 2.317, CV: 0.989
+# Generate a table with kable
+knitr::kable(Indexes, caption = "Methods Performance Metrics for 2002")
+
+```
+
+## Final considerations
+
+- The two approaches are basically equivalent (for both years) in every aspect considered: point-wise and interval predictions, and capability of explaining the variance of the model.
+This is due the fact that the prior distributions are mainly non informative, which means that the majority of the information comes from the data.
+
+- With more informative prior distributions, there could be a more meaningful difference between the two approaches. 
