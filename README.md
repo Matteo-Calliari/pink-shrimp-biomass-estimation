@@ -10,9 +10,7 @@ How is pink shrimp biomass distributed in the northern Tyrrhenian Sea and the Li
 
 Survey data from the **MEDITS** programme for the years **1997** and **2002**, covering the northern Tyrrhenian Sea and the Ligurian Sea. Covariates include bathymetry, slope, distance from the coast, temperature and salinity.
 
-**The data files are not included in this repository.**
-`shrimpsfull.RData` holds the survey observations and `AllGrids.RData` holds the prediction grids.
-<!-- TODO: add where the data can be requested or downloaded -->
+The data files are included in this repository so the analysis can be reproduced. shrimpsfull.RData holds the survey observations and AllGrids.RData holds the prediction grids. Source and terms of use: provided by the course instructor for the Spatial Statistics course.
 
 ## Methods
 
@@ -46,7 +44,7 @@ The two approaches perform almost identically in both years, for point predictio
 
 ## How to run
 
-1. Put `shrimpsfull.RData` and `AllGrids.RData` in the same folder as `presentazione.Rmd`.
+1. Clone the repository. The data files are already in the project folder.
 2. Install the required R packages:
    `geoR`, `mgcv`, `ggplot2`, `gridExtra`, `patchwork`, `corrplot`, `metR`, `sf`, `sp`, `gstat`, `MBA`, `fpp3`, `knitr`.
 3. Open `presentazione.Rmd` in RStudio and click **Knit**. A LaTeX installation (for example TinyTeX) is needed for the Beamer PDF. The Bayesian cross-validation is computationally heavy, so knitting takes a while.
